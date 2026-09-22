@@ -1,0 +1,54 @@
+{
+  "manifest_version": 3,
+  "name": "Find Trend YouTube - 100% Local Viral Discovery",
+  "version": "1.0.0",
+  "description": "Tìm kiếm video viral trên YouTube, đo chỉ số VPH (Views Per Hour) và Outlier Score 100% Local phong cách vidIQ.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "*://www.youtube.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://www.youtube.com/*"
+      ],
+      "js": [
+        "page-world.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "*://www.youtube.com/*"
+      ],
+      "js": [
+        "locales/translations.js",
+        "utils/i18n.js",
+        "utils/parser.js",
+        "utils/exporter.js",
+        "ui/modal.js",
+        "content.js"
+      ],
+      "run_at": "document_end"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "ui/styles.css",
+        "page-world.js"
+      ],
+      "matches": [
+        "*://www.youtube.com/*"
+      ]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
