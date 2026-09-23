@@ -13,9 +13,9 @@
   const channelPendingQueue = new Set();
   let isProcessingQueue = false;
 
-  // ponytail: localStorage cache with 24h TTL — survives page reloads, zero extra infra
+  // ponytail: localStorage cache with 7-day TTL — survives page reloads, zero extra infra
   const CACHE_KEY = 'ft_channel_cache';
-  const CACHE_TTL = 24 * 60 * 60 * 1000; // 24h
+  const CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days
 
   function loadDiskCache() {
     try {
