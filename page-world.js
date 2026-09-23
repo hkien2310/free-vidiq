@@ -417,25 +417,41 @@
     let viewCountText = '';
     let publishedTimeText = '';
 
-    // Dòng 1: Kênh
-    if (rows[0]?.metadataParts?.[0]?.text?.content) {
-      channel = rows[0].metadataParts[0].text.content;
-      channelId = rows[0].metadataParts[0].text.commandRuns?.[0]?.onTap?.innertubeCommand?.browseEndpoint?.browseId || '';
-    } else if (meta?.image?.decoratedAvatarViewModel?.a11yLabel) {
-      channel = meta.image.decoratedAvatarViewModel.a11yLabel.replace(/^(Chuyển đến kênh|Go to channel)\s*/i, '');
+    const allParts = [];
+    for (const r of rows) {
+      if (Array.isArray(r.metadataParts)) allParts.push(...r.metadataParts);
     }
 
+    for (const part of allParts) {
+      const text = part.text?.content || '';
+      const a11y = part.accessibilityLabel || '';
+      const combined = (text + ' ' + a11y).toLowerCase();
+
+      if (!channel && part.text?.commandRuns?.[0]?.onTap?.innertubeCommand?.browseEndpoint?.browseId) {
+        channel = text;
+        channelId = part.text.commandRuns[0].onTap.innertubeCommand.browseEndpoint.browseId;
+        continue;
+      }
+      if (!viewCountText && (combined.includes('view') || combined.includes('lượt xem') || /^\d+(\.\d+)?[kmb]?$/i.test(text))) {
+        viewCountText = a11y || text;
+        continue;
+      }
+      if (!publishedTimeText && (combined.includes('ago') || combined.includes('trước') || /(second|minute|hour|day|week|month|year|giây|phút|giờ|ngày|tuần|tháng|năm)/i.test(combined))) {
+        publishedTimeText = a11y || text;
+        continue;
+      }
+    }
+
+    if (!channel && allParts[0]) channel = allParts[0].text?.content || '';
+    if (!channel && meta?.image?.decoratedAvatarViewModel?.a11yLabel) {
+      channel = meta.image.decoratedAvatarViewModel.a11yLabel.replace(/^(Chuyển đến kênh|Go to channel)\s*/i, '');
+    }
     if (!channelId) {
       channelId = meta?.image?.decoratedAvatarViewModel?.onTap?.innertubeCommand?.browseEndpoint?.browseId ||
                   meta?.image?.avatarStackViewModel?.rendererContext?.commandContext?.onTap?.innertubeCommand?.browseEndpoint?.browseId || '';
     }
-
-    // Dòng 2: View count & Ngày đăng
-    if (rows[1]?.metadataParts) {
-      viewCountText = rows[1].metadataParts[0]?.text?.content || '';
-      publishedTimeText = rows[1].metadataParts[1]?.text?.content || 
-                          rows[1].metadataParts[1]?.accessibilityLabel || '';
-    }
+    if (!viewCountText && allParts[1]) viewCountText = allParts[1].accessibilityLabel || allParts[1].text?.content || '';
+    if (!publishedTimeText && allParts[2]) publishedTimeText = allParts[2].accessibilityLabel || allParts[2].text?.content || '';
 
     // Thumbnail
     const thumbSources = lockup.contentImage?.thumbnailViewModel?.image?.sources || [];
@@ -515,7 +531,7 @@
     }
 
     return {
-      videoId,
+      videoId: vr.videoId,
       title,
       viewCountText,
       publishedTimeText,
@@ -622,21 +638,70 @@
   }
 
   /**
+   * Quét video trực tiếp từ DOM trang chủ (sử dụng thuộc tính .data của Custom Elements)
+   * Chạy tức thì khi SPA navigate từ search về home mà ytInitialData không reload
+   */
+  function parseHomeFeedFromDOM() {
+    const videos = [];
+    const items = document.querySelectorAll('ytd-rich-item-renderer');
+    for (const item of items) {
+      const content = item.data?.content;
+      if (content) {
+        const v = extractAnyVideo(content);
+        if (v) videos.push(v);
+      }
+    }
+    processChannelQueue();
+    return { videos, continuation: continuationToken };
+  }
+
+  /**
+   * Quét video từ trang search results (ytInitialData)
+   */
+  function parseSearchResults(initialData) {
+    const videos = [];
+    const sections = initialData?.contents?.twoColumnSearchResultsRenderer
+      ?.primaryContents?.sectionListRenderer?.contents || [];
+
+    for (const section of sections) {
+      const items = section.itemSectionRenderer?.contents || [];
+      for (const item of items) {
+        const v = extractAnyVideo(item);
+        if (v) videos.push(v);
+      }
+      const token = section.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token;
+      if (token) continuationToken = token;
+    }
+
+    processChannelQueue();
+    return { videos, continuation: continuationToken };
+  }
+
+  /**
    * Phân tích và trích xuất video từ một payload response của YouTube Browse API
    */
   function parseBrowseResponse(data) {
     const newVideos = [];
-    const actions = data?.onResponseReceivedActions || [];
+    const actions = data?.onResponseReceivedActions || data?.onResponseReceivedCommands || [];
 
     for (const action of actions) {
       const items = action.appendContinuationItemsAction?.continuationItems || 
                     action.reloadContinuationItemsCommand?.continuationItems || [];
       
       for (const item of items) {
+        // Homepage format
         if (item.richItemRenderer?.content) {
           const v = extractAnyVideo(item.richItemRenderer.content);
           if (v) newVideos.push(v);
-        } else if (item.richSectionRenderer?.content?.richShelfRenderer?.contents) {
+        }
+        // Search results format
+        else if (item.itemSectionRenderer?.contents) {
+          for (const sub of item.itemSectionRenderer.contents) {
+            const v = extractAnyVideo(sub);
+            if (v) newVideos.push(v);
+          }
+        }
+        else if (item.richSectionRenderer?.content?.richShelfRenderer?.contents) {
           const shelfItems = item.richSectionRenderer.content.richShelfRenderer.contents;
           for (const shelfItem of shelfItems) {
             const v = extractAnyVideo(shelfItem.richItemRenderer?.content || shelfItem);
@@ -707,8 +772,24 @@
     const { action, payload, requestId } = e.detail || {};
 
     if (action === 'INIT_FEED') {
-      const initialData = window.ytInitialData;
-      const res = parseHomeFeed(initialData);
+      const isSearch = window.location.pathname === '/results';
+      let res = { videos: [], continuation: null };
+
+      if (isSearch) {
+        res = parseSearchResults(window.ytInitialData);
+      } else {
+        // 1. Ưu tiên parse từ ytInitialData nếu có dữ liệu browse của Home
+        if (window.ytInitialData?.contents?.twoColumnBrowseResultsRenderer) {
+          res = parseHomeFeed(window.ytInitialData);
+        }
+
+        // 2. Nếu rỗng (do vừa từ Search về Home bằng SPA), quét thẳng từ DOM của YouTube
+        if (res.videos.length === 0) {
+          res = parseHomeFeedFromDOM();
+        }
+      }
+
+      console.log(`[Find Trend] INIT_FEED: isSearch=${isSearch}, result=${res.videos.length} videos`);
       window.dispatchEvent(new CustomEvent('FIND_TREND_RESPONSE', {
         detail: { requestId, action, data: res }
       }));

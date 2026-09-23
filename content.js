@@ -182,10 +182,11 @@
     ensureHeaderStyles();
 
     const isHome = location.pathname === '/' || location.pathname === '';
+    const isSearch = location.pathname === '/results';
     const existingBtn = document.getElementById('find-trend-trigger-btn');
 
-    // Không phải trang chủ → ẩn nút nếu có
-    if (!isHome) {
+    // Không phải trang chủ hoặc search → ẩn nút nếu có
+    if (!isHome && !isSearch) {
       if (existingBtn) existingBtn.style.display = 'none';
       return;
     }
@@ -214,7 +215,11 @@
         const modal = setupModal();
         modal.open();
 
-        if (modal.allVideos.length === 0) {
+        const currentUrl = location.pathname + location.search;
+        if (modal._loadedUrl !== currentUrl || modal.allVideos.length === 0) {
+          modal.allVideos = [];
+          modal.filteredVideos = [];
+          modal._loadedUrl = currentUrl;
           modal.setLoading(true);
           sendPageRequest('INIT_FEED');
         }
@@ -249,10 +254,24 @@
   /**
    * Theo dõi sự kiện SPA Navigation của YouTube
    */
+  let lastPageUrl = location.href;
+  function onNavigate() {
+    const newUrl = location.href;
+    if (newUrl !== lastPageUrl) {
+      // Reset modal data when navigating to a different page
+      if (modalInstance) {
+        modalInstance.allVideos = [];
+        modalInstance.close();
+      }
+      lastPageUrl = newUrl;
+    }
+    injectHeaderButton();
+  }
+
   function setupNavigationObserver() {
-    window.addEventListener('yt-navigate-finish', injectHeaderButton);
-    window.addEventListener('yt-page-data-updated', injectHeaderButton);
-    window.addEventListener('popstate', injectHeaderButton);
+    window.addEventListener('yt-navigate-finish', onNavigate);
+    window.addEventListener('yt-page-data-updated', onNavigate);
+    window.addEventListener('popstate', onNavigate);
   }
 
   // Khởi động
@@ -263,6 +282,17 @@
     injectHeaderButton();
     observeMasthead();
     setupNavigationObserver();
+
+    // Auto-open modal trên search page nếu được navigate từ modal search bar
+    if (location.pathname === '/results' && sessionStorage.getItem('ft_auto_open')) {
+      sessionStorage.removeItem('ft_auto_open');
+      setTimeout(() => {
+        const modal = setupModal();
+        modal.open();
+        modal.setLoading(true);
+        sendPageRequest('INIT_FEED');
+      }, 1500);
+    }
 
     // Vòng lặp kiểm tra trong 5s đầu đề phòng Polymer hydration ghi đè muộn
     let retries = 0;

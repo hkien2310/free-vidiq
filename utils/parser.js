@@ -99,7 +99,7 @@ function parseSubscriberCount(subStr) {
  * Ví dụ: "3 hours ago", "2 days ago", "1 month ago", "2 giờ trước", "5 ngày trước", "Just now", "Vừa xong"
  */
 function parsePublishedHours(timeStr) {
-  if (!timeStr || typeof timeStr !== 'string') return 24;
+  if (!timeStr || typeof timeStr !== 'string') return null;
 
   const clean = timeStr.replace(/\u00A0/g, ' ').trim().toLowerCase();
 
@@ -112,7 +112,7 @@ function parsePublishedHours(timeStr) {
   }
 
   const match = clean.match(/(\d+)\s*(second|minute|hour|day|week|month|year|giây|phút|giờ|ngày|tuần|tháng|năm)/i);
-  if (!match) return 24;
+  if (!match) return null;
 
   const value = parseInt(match[1], 10);
   const unit = match[2].toLowerCase();
@@ -140,7 +140,7 @@ function parsePublishedHours(timeStr) {
     case 'năm':
       return value * 24 * 365;
     default:
-      return 24;
+      return null;
   }
 }
 
@@ -148,7 +148,7 @@ function parsePublishedHours(timeStr) {
  * Tính Views Per Hour (VPH)
  */
 function calculateVPH(views, hours) {
-  if (!views || views <= 0) return 0;
+  if (!views || views <= 0 || !hours || hours <= 0) return 0;
   // Sàn 0.1 giờ (6 phút) để video mới đăng có chỉ số vận tốc chính xác mà không bị chia cho 0
   const validHours = Math.max(hours, 0.1);
   const vph = views / validHours;
@@ -188,36 +188,35 @@ function formatCompactNumber(num) {
 /**
  * Tính Outlier Score (Hệ số đột biến — chuẩn vidIQ)
  *
- * Ưu tiên: medianViews (views / median views của kênh) — giống vidIQ.
- * Fallback khi chưa có medianViews: subs-based log-scaled ratio.
- * Fallback cuối: VPH vs feed median.
+ * Chỉ so sánh video với chính kênh của nó:
+ * 1. Ưu tiên cao nhất: views / median views (50 video gần nhất của kênh) — chuẩn vidIQ.
+ * 2. Fallback: Ước tính theo lượng subscribers của chính kênh đó.
+ * 3. Nếu chưa tải xong dữ liệu kênh: Giữ mặc định 1.0x (không so sánh với video khác trên trang chủ).
  *
  * 1.0x = phong độ bình thường  |  > 3x = đột biến  |  > 10x = viral
  */
-function calculateOutlierScore(video, medianVPH = 10) {
+function calculateOutlierScore(video) {
   const views = video.views || 0;
-  const vph = video.vph || 0;
   const subs = video.subs || 0;
   const channelMedian = video.medianViews || 0;
 
   if (views < 200) return 1.0;
 
-  // Case 1: medianViews available (vidIQ-accurate)
+  // Case 1: Có medianViews từ kênh (vidIQ-accurate)
   if (channelMedian > 0) {
     const score = views / channelMedian;
     return parseFloat(Math.max(0.1, score).toFixed(1));
   }
 
-  // Case 2: subs-based fallback with log-scaled ratio
+  // Case 2: Có subs từ kênh (ước tính dựa trên quy mô kênh)
   if (subs && subs > 0) {
     const ratio = 0.3 / Math.pow(Math.max(subs, 1000) / 1000, 0.22);
     const expectedViews = Math.max(200, subs * ratio);
     return parseFloat(Math.max(0.1, views / expectedViews).toFixed(1));
   }
 
-  // Case 3: VPH vs feed median
-  const score = vph / Math.max(10, medianVPH);
-  return parseFloat(Math.max(0.1, score).toFixed(1));
+  // Case 3: Đang chờ tải dữ liệu kênh -> giữ mức chuẩn 1.0x, không đổi lung tung theo feed
+  return 1.0;
 }
 
 /**
@@ -237,6 +236,7 @@ if (typeof window !== 'undefined') {
     calculateVPH,
     formatVPH,
     formatCompactNumber,
+    formatNumber: formatCompactNumber,
     calculateOutlierScore,
     parseDurationSeconds,
     parseSubscriberCount
