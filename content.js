@@ -55,9 +55,13 @@
   window.addEventListener('FIND_TREND_RESPONSE', (e) => {
     const { action, data } = e.detail || {};
 
-    if (action === 'CHANNEL_STATS_READY') {
+    if (action === 'CHANNEL_STATS_READY' || action === 'UPDATE_CHANNEL_SUBS') {
       if (data && data.medianViews > 0) {
-        scanAndBadgeChannelVideos();
+        if (data.channelId) updateBadgesForChannel(data.channelId, data.medianViews);
+        if (data.ucId && data.ucId !== data.channelId) updateBadgesForChannel(data.ucId, data.medianViews);
+      }
+      if (modalInstance && data && data.channelId) {
+        modalInstance.updateChannelSubs(data.channelId, data.subs, data.medianViews);
       }
       return;
     }
@@ -274,11 +278,46 @@
   }
 
   /**
+   * Pending channel requests set to prevent duplicate network calls
+   */
+  const pendingChannelRequests = new Set();
+
+  /**
    * Kiểm tra xem trang hiện tại có phải trang kênh YouTube không
    */
   function isChannelPage() {
     const p = location.pathname;
     return p.startsWith('/@') || p.startsWith('/channel/') || p.startsWith('/c/') || p.startsWith('/user/');
+  }
+
+  /**
+   * Kiểm tra xem trang hiện tại có phải trang chủ YouTube không
+   */
+  function isHomePage() {
+    const p = location.pathname;
+    return p === '/' || p === '';
+  }
+
+  /**
+   * Kiểm tra xem trang có nên hiển thị badge không
+   */
+  function shouldBadgePage() {
+    return isChannelPage() || isHomePage();
+  }
+
+  /**
+   * Trích xuất channelId (handle @... hoặc UC...) từ card video
+   */
+  function extractCardChannel(card) {
+    const chLink = card.querySelector('a[href*="/@"], a[href*="/channel/UC"], a[href*="/c/"], a[href*="/user/"], ytd-channel-name a, #channel-name a, [class*="avatar"] a');
+    const href = chLink?.getAttribute('href') || '';
+    const handleMatch = href.match(/(@[^\/\?]+)/);
+    if (handleMatch) return handleMatch[1];
+    const ucMatch = href.match(/(UC[a-zA-Z0-9_-]+)/);
+    if (ucMatch) return ucMatch[1];
+    const customMatch = href.match(/\/(c|user)\/([^\/\?]+)/);
+    if (customMatch) return customMatch[2];
+    return null;
   }
 
   /**
@@ -330,12 +369,45 @@
   }
 
   /**
-   * Quét và gắn nhãn VPH + Outlier lên các thumbnail video trên trang kênh
+   * Cập nhật tức thì badge Outlier cho các video thuộc một kênh cụ thể
    */
-  function scanAndBadgeChannelVideos() {
+  function updateBadgesForChannel(channelId, medianViews) {
+    if (!channelId || !medianViews || medianViews <= 0) return;
+    const parser = window.FindTrendParser;
+    if (!parser) return;
+
+    const selector = window.CSS && CSS.escape 
+      ? `.ft-channel-badge[data-channel-id="${CSS.escape(channelId)}"]`
+      : `.ft-channel-badge[data-channel-id="${channelId}"]`;
+    const badges = document.querySelectorAll(selector);
+
+    badges.forEach(badge => {
+      const views = parseInt(badge.dataset.views, 10);
+      if (!views) return;
+      const outlierVal = views / medianViews;
+      const outlierChip = badge.querySelector('.ft-badge-chip-outlier');
+      if (!outlierChip) return;
+
+      const isViral = outlierVal >= 3.0;
+      const isGood = outlierVal >= 1.5;
+      const bg = isViral ? 'rgba(220, 38, 38, 0.9)' : (isGood ? 'rgba(217, 119, 6, 0.9)' : 'rgba(15, 23, 42, 0.85)');
+      const border = isViral ? '#ef4444' : (isGood ? '#f59e0b' : 'rgba(255, 255, 255, 0.2)');
+      const textColor = (isViral || isGood) ? '#ffffff' : '#cbd5e1';
+
+      outlierChip.style.background = bg;
+      outlierChip.style.border = `1px solid ${border}`;
+      outlierChip.style.color = textColor;
+      outlierChip.textContent = `🔥 ${parser.formatOutlier(outlierVal)}`;
+    });
+  }
+
+  /**
+   * Quét và gắn nhãn VPH + Outlier lên các thumbnail video trên trang kênh hoặc trang chủ
+   */
+  function scanAndBadgeVideos() {
     ensureHeaderStyles();
 
-    if (!isChannelPage()) {
+    if (!shouldBadgePage()) {
       document.querySelectorAll('.ft-channel-badge').forEach(b => b.remove());
       return;
     }
@@ -343,7 +415,17 @@
     const parser = window.FindTrendParser;
     if (!parser) return;
 
-    const cards = document.querySelectorAll('yt-lockup-view-model, ytd-rich-item-renderer, ytd-grid-video-renderer');
+    const isChannel = isChannelPage();
+    const pageChannelIdent = isChannel ? getPageChannelIdentifier() : null;
+    const pageChannelMedian = isChannel ? getCachedChannelMedian(pageChannelIdent) : 0;
+
+    // Bắn request ngầm lấy stats chuẩn nếu trang kênh chưa có trong cache
+    if (isChannel && !pageChannelMedian && pageChannelIdent && !pendingChannelRequests.has(pageChannelIdent)) {
+      pendingChannelRequests.add(pageChannelIdent);
+      sendPageRequest('FETCH_CHANNEL_STATS', { channelId: pageChannelIdent });
+    }
+
+    const cards = document.querySelectorAll('yt-lockup-view-model, ytd-rich-item-renderer, ytd-video-renderer, ytd-grid-video-renderer');
     const videoData = [];
     const seenIds = new Set();
 
@@ -356,16 +438,19 @@
       if (seenIds.has(videoId)) return;
 
       let viewText = '', timeText = '';
-      card.querySelectorAll('span').forEach(span => {
+      card.querySelectorAll('span, .inline-metadata-item').forEach(span => {
         if (span.closest('.ft-channel-badge')) return;
         const t = span.textContent.replace(/\u00A0/g, ' ').trim();
         if (!t) return;
         if (!timeText && /(second|minute|hour|day|week|month|year|giây|phút|giờ|ngày|tuần|tháng|năm)\s*(ago|trước)/i.test(t)) {
           timeText = t;
-        } else if (!viewText && /^[▷\s]*[\d.,]+\s*([kmbtrtriệuỷnghìn]*)$/i.test(t)) {
+        } else if (!viewText && /^[▷\s]*[\d.,]+\s*([a-zà-ỹ]*)\s*(?:views?|lượt xem)?$/i.test(t)) {
           viewText = t.replace(/^[▷\s]+/, '');
         }
       });
+
+      // Bỏ qua quảng cáo hoặc Shorts không có thời gian đăng tương đối
+      if (!timeText) return;
 
       const views = parser.parseViewCount(viewText);
       const hours = parser.parsePublishedHours(timeText) || 24;
@@ -373,33 +458,31 @@
 
       if (views > 0) {
         seenIds.add(videoId);
-        videoData.push({ card, videoId, views, vph });
+        const cardChannelId = isChannel ? pageChannelIdent : extractCardChannel(card);
+        videoData.push({ card, videoId, views, vph, channelId: cardChannelId });
       }
     });
 
     if (!videoData.length) return;
 
-    // 1. Tìm median chuẩn của kênh từ 50 video mới nhất
-    const channelIdent = getPageChannelIdentifier();
-    let channelMedian = getCachedChannelMedian(channelIdent);
-
-    // Bắn request ngầm lấy stats chuẩn nếu chưa có trong cache
-    if (!channelMedian && channelIdent) {
-      sendPageRequest('FETCH_CHANNEL_STATS', { channelId: channelIdent });
-    }
-
-    // 2. Xác định median hiệu lực:
-    // Ưu tiên channelMedian chuẩn từ 50 video mới nhất
-    // Nếu chưa có channelMedian:
-    // - Ở tab Mới nhất/Trang chủ: dùng tạm median các video trên màn hình
-    // - Ở tab Phổ biến nhất: không dùng median tab phổ biến (tránh lạm phát view)
-    const isPopularTab = location.pathname.includes('/videos') && 
+    // Median fallback trên trang kênh (chỉ tab Mới nhất, không dùng trên tab Phổ biến)
+    const isPopularTab = isChannel && location.pathname.includes('/videos') && 
       (location.search.includes('sort=p') || document.querySelector('yt-chip-cloud-chip-renderer.iron-selected')?.textContent?.includes('Phổ biến') || document.querySelector('yt-chip-cloud-chip-renderer.iron-selected')?.textContent?.includes('Popular'));
 
-    const domMedian = calculateMedian(videoData.map(v => v.views)) || 1;
-    const effectiveMedian = channelMedian > 0 ? channelMedian : (isPopularTab ? 0 : domMedian);
+    const domMedian = (isChannel && !isPopularTab) ? (calculateMedian(videoData.map(v => v.views)) || 1) : 0;
 
     videoData.forEach(v => {
+      let effectiveMedian = 0;
+      if (isChannel) {
+        effectiveMedian = pageChannelMedian > 0 ? pageChannelMedian : domMedian;
+      } else {
+        effectiveMedian = v.channelId ? getCachedChannelMedian(v.channelId) : 0;
+        if (!effectiveMedian && v.channelId && !pendingChannelRequests.has(v.channelId)) {
+          pendingChannelRequests.add(v.channelId);
+          sendPageRequest('FETCH_CHANNEL_STATS', { channelId: v.channelId });
+        }
+      }
+
       const outlierVal = effectiveMedian > 0 ? (v.views / effectiveMedian) : 0;
       const thumbWrap = v.card.querySelector('yt-thumbnail-view-model, ytd-thumbnail, [class*="content-image"]') || 
                         v.card.querySelector('a[href*="/watch?v="]') || 
@@ -425,6 +508,10 @@
       }
 
       container.dataset.videoId = v.videoId;
+      container.dataset.views = String(v.views);
+      if (v.channelId) {
+        container.dataset.channelId = v.channelId;
+      }
 
       const vphChip = container.querySelector('.ft-badge-chip-vph');
       const outlierChip = container.querySelector('.ft-badge-chip-outlier');
@@ -456,14 +543,14 @@
   }
 
   /**
-   * Giám sát thay đổi DOM trên trang kênh để gắn badge khi scroll/load thêm video
+   * Giám sát thay đổi DOM để gắn badge khi scroll/load thêm video
    */
-  function observeChannelVideos() {
+  function observeVideos() {
     let timer = null;
     const observer = new MutationObserver(() => {
-      if (!isChannelPage()) return;
+      if (!shouldBadgePage()) return;
       if (timer) clearTimeout(timer);
-      timer = setTimeout(scanAndBadgeChannelVideos, 250);
+      timer = setTimeout(scanAndBadgeVideos, 250);
     });
 
     const target = document.querySelector('ytd-app') || document.body;
@@ -507,10 +594,11 @@
         modalInstance.close();
       }
       document.querySelectorAll('.ft-channel-badge').forEach(b => b.remove());
+      pendingChannelRequests.clear();
       lastPageUrl = newUrl;
     }
     injectHeaderButton();
-    scanAndBadgeChannelVideos();
+    scanAndBadgeVideos();
   }
 
   function setupNavigationObserver() {
@@ -527,8 +615,8 @@
     injectHeaderButton();
     observeMasthead();
     setupNavigationObserver();
-    observeChannelVideos();
-    scanAndBadgeChannelVideos();
+    observeVideos();
+    scanAndBadgeVideos();
 
     // Auto-open modal trên search page nếu được navigate từ modal search bar
     if (location.pathname === '/results' && sessionStorage.getItem('ft_auto_open')) {
@@ -546,7 +634,7 @@
     const bootInterval = setInterval(() => {
       retries++;
       injectHeaderButton();
-      scanAndBadgeChannelVideos();
+      scanAndBadgeVideos();
       if (retries >= 10 && document.getElementById('find-trend-trigger-btn')) {
         clearInterval(bootInterval);
       }

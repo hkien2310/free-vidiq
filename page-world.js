@@ -329,7 +329,7 @@
       }
 
       const medianViews = median(videoViews);
-      const stats = { subs: subs || 0, medianViews };
+      const stats = { subs: subs || 0, medianViews, ucId };
       channelStatsCache.set(ucId, stats);
       if (channelId && channelId !== ucId) {
         channelStatsCache.set(channelId, stats);
@@ -399,7 +399,13 @@
             window.dispatchEvent(new CustomEvent('FIND_TREND_RESPONSE', {
               detail: {
                 action: 'UPDATE_CHANNEL_SUBS',
-                data: { channelId, subs: stats.subs, medianViews: stats.medianViews }
+                data: { channelId, ucId: stats.ucId, subs: stats.subs, medianViews: stats.medianViews }
+              }
+            }));
+            window.dispatchEvent(new CustomEvent('FIND_TREND_RESPONSE', {
+              detail: {
+                action: 'CHANNEL_STATS_READY',
+                data: { channelId, ucId: stats.ucId, subs: stats.subs, medianViews: stats.medianViews }
               }
             }));
           } else {
@@ -867,13 +873,10 @@
         return;
       }
 
-      fetchChannelStats(channelId).then(stats => {
-        if (stats && stats.medianViews > 0) {
-          window.dispatchEvent(new CustomEvent('FIND_TREND_RESPONSE', {
-            detail: { action: 'CHANNEL_STATS_READY', data: { channelId, ...stats } }
-          }));
-        }
-      });
+      channelPendingQueue.add(channelId);
+      if (!isProcessingQueue) {
+        processChannelQueue();
+      }
     }
   });
 
