@@ -176,7 +176,7 @@ function formatVPH(vph) {
 function formatOutlier(outlier) {
   if (!outlier || outlier <= 0) return '1.0x';
   if (outlier < 0.1) return '< 0.1x';
-  if (outlier >= 50) return '> 50x';
+  if (outlier >= 100) return '> 100x';
   if (outlier >= 10) return Math.round(outlier) + 'x';
   return outlier.toFixed(1) + 'x';
 }

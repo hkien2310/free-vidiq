@@ -222,11 +222,40 @@
   }
 
   /**
+   * Resolve handle (@name) or custom URL to canonical UC... channelId
+   */
+  async function resolveChannelId(idOrHandle) {
+    if (!idOrHandle) return null;
+    if (idOrHandle.startsWith('UC')) return idOrHandle;
+    const apiKey = getApiKey();
+    const context = getEnContext();
+    const url = `https://www.youtube.com/youtubei/v1/navigation/resolve_url?key=${apiKey}`;
+    try {
+      const handle = idOrHandle.startsWith('@') ? idOrHandle : `@${idOrHandle}`;
+      const res = await originalFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          context,
+          url: `https://www.youtube.com/${handle}`
+        })
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data.endpoint?.browseEndpoint?.browseId || null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
    * Fetch channel stats: subs + medianViews from Videos tab
    * Returns { subs, medianViews } or null
    */
   async function fetchChannelStats(channelId) {
-    if (!channelId || (!channelId.startsWith('UC') && !channelId.startsWith('@'))) return null;
+    if (!channelId) return null;
+    const ucId = channelId.startsWith('UC') ? channelId : await resolveChannelId(channelId);
+    if (!ucId) return null;
     const apiKey = getApiKey();
     const context = getEnContext();
     const browseUrl = `https://www.youtube.com/youtubei/v1/browse?key=${apiKey}`;
@@ -236,7 +265,7 @@
       // Request 1: channel page (gets subs from header)
       const res = await originalFetch(browseUrl, {
         method: 'POST', headers,
-        body: JSON.stringify({ context, browseId: channelId })
+        body: JSON.stringify({ context, browseId: ucId })
       });
       if (!res.ok) return null;
       const data = await res.json();
@@ -259,7 +288,7 @@
               try {
                 const res2 = await originalFetch(browseUrl, {
                   method: 'POST', headers,
-                  body: JSON.stringify({ context, browseId: channelId, params })
+                  body: JSON.stringify({ context, browseId: ucId, params })
                 });
                 if (res2.ok) {
                   const data2 = await res2.json();
@@ -300,7 +329,13 @@
       }
 
       const medianViews = median(videoViews);
-      return { subs: subs || 0, medianViews };
+      const stats = { subs: subs || 0, medianViews };
+      channelStatsCache.set(ucId, stats);
+      if (channelId && channelId !== ucId) {
+        channelStatsCache.set(channelId, stats);
+      }
+      saveDiskCache();
+      return stats;
     } catch (e) {
       return null;
     }
@@ -820,6 +855,25 @@
 
       // 2. Fallback kích hoạt load more của trang web thật nếu không có token
       triggerWebLoadMore();
+    } else if (action === 'FETCH_CHANNEL_STATS') {
+      const channelId = payload?.channelId;
+      if (!channelId) return;
+
+      if (channelStatsCache.has(channelId)) {
+        const stats = channelStatsCache.get(channelId);
+        window.dispatchEvent(new CustomEvent('FIND_TREND_RESPONSE', {
+          detail: { action: 'CHANNEL_STATS_READY', data: { channelId, ...stats } }
+        }));
+        return;
+      }
+
+      fetchChannelStats(channelId).then(stats => {
+        if (stats && stats.medianViews > 0) {
+          window.dispatchEvent(new CustomEvent('FIND_TREND_RESPONSE', {
+            detail: { action: 'CHANNEL_STATS_READY', data: { channelId, ...stats } }
+          }));
+        }
+      });
     }
   });
 

@@ -54,6 +54,14 @@
    */
   window.addEventListener('FIND_TREND_RESPONSE', (e) => {
     const { action, data } = e.detail || {};
+
+    if (action === 'CHANNEL_STATS_READY') {
+      if (data && data.medianViews > 0) {
+        scanAndBadgeChannelVideos();
+      }
+      return;
+    }
+
     if (!modalInstance) return;
 
     if (action === 'INIT_FEED') {
@@ -284,6 +292,44 @@
   }
 
   /**
+   * Lấy định danh kênh (channelId UC... hoặc handle @...) từ trang hiện tại
+   */
+  function getPageChannelIdentifier() {
+    const canonical = document.querySelector('link[rel="canonical"]')?.getAttribute('href') || '';
+    const m = canonical.match(/\/channel\/(UC[a-zA-Z0-9_-]+)/);
+    if (m) return m[1];
+
+    const meta = document.querySelector('meta[itemprop="channelId"]')?.getAttribute('content');
+    if (meta && meta.startsWith('UC')) return meta;
+
+    const path = location.pathname;
+    const handleMatch = path.match(/^(\/@[^\/\?]+)/);
+    if (handleMatch) return handleMatch[1].replace('/', '');
+
+    const channelMatch = path.match(/^\/channel\/(UC[^\/\?]+)/);
+    if (channelMatch) return channelMatch[1];
+
+    return null;
+  }
+
+  /**
+   * Lấy medianViews chuẩn của kênh từ cache 7 ngày (localStorage)
+   */
+  function getCachedChannelMedian(channelId) {
+    if (!channelId) return 0;
+    try {
+      const raw = localStorage.getItem('ft_channel_cache');
+      if (!raw) return 0;
+      const data = JSON.parse(raw);
+      const entry = data[channelId];
+      if (entry && (Date.now() - entry.t < 7 * 24 * 60 * 60 * 1000) && entry.m > 0) {
+        return entry.m;
+      }
+    } catch (e) {}
+    return 0;
+  }
+
+  /**
    * Quét và gắn nhãn VPH + Outlier lên các thumbnail video trên trang kênh
    */
   function scanAndBadgeChannelVideos() {
@@ -332,10 +378,29 @@
     });
 
     if (!videoData.length) return;
-    const medViews = calculateMedian(videoData.map(v => v.views)) || 1;
+
+    // 1. Tìm median chuẩn của kênh từ 50 video mới nhất
+    const channelIdent = getPageChannelIdentifier();
+    let channelMedian = getCachedChannelMedian(channelIdent);
+
+    // Bắn request ngầm lấy stats chuẩn nếu chưa có trong cache
+    if (!channelMedian && channelIdent) {
+      sendPageRequest('FETCH_CHANNEL_STATS', { channelId: channelIdent });
+    }
+
+    // 2. Xác định median hiệu lực:
+    // Ưu tiên channelMedian chuẩn từ 50 video mới nhất
+    // Nếu chưa có channelMedian:
+    // - Ở tab Mới nhất/Trang chủ: dùng tạm median các video trên màn hình
+    // - Ở tab Phổ biến nhất: không dùng median tab phổ biến (tránh lạm phát view)
+    const isPopularTab = location.pathname.includes('/videos') && 
+      (location.search.includes('sort=p') || document.querySelector('yt-chip-cloud-chip-renderer.iron-selected')?.textContent?.includes('Phổ biến') || document.querySelector('yt-chip-cloud-chip-renderer.iron-selected')?.textContent?.includes('Popular'));
+
+    const domMedian = calculateMedian(videoData.map(v => v.views)) || 1;
+    const effectiveMedian = channelMedian > 0 ? channelMedian : (isPopularTab ? 0 : domMedian);
 
     videoData.forEach(v => {
-      const outlierVal = v.views / medViews;
+      const outlierVal = effectiveMedian > 0 ? (v.views / effectiveMedian) : 0;
       const thumbWrap = v.card.querySelector('yt-thumbnail-view-model, ytd-thumbnail, [class*="content-image"]') || 
                         v.card.querySelector('a[href*="/watch?v="]') || 
                         v.card;
@@ -369,16 +434,23 @@
       }
 
       if (outlierChip) {
-        const isViral = outlierVal >= 3.0;
-        const isGood = outlierVal >= 1.5;
-        const bg = isViral ? 'rgba(220, 38, 38, 0.9)' : (isGood ? 'rgba(217, 119, 6, 0.9)' : 'rgba(15, 23, 42, 0.85)');
-        const border = isViral ? '#ef4444' : (isGood ? '#f59e0b' : 'rgba(255, 255, 255, 0.2)');
-        const textColor = (isViral || isGood) ? '#ffffff' : '#cbd5e1';
+        if (effectiveMedian <= 0) {
+          outlierChip.style.background = 'rgba(15, 23, 42, 0.85)';
+          outlierChip.style.border = '1px solid rgba(255, 255, 255, 0.2)';
+          outlierChip.style.color = '#cbd5e1';
+          outlierChip.textContent = '🔥 ~';
+        } else {
+          const isViral = outlierVal >= 3.0;
+          const isGood = outlierVal >= 1.5;
+          const bg = isViral ? 'rgba(220, 38, 38, 0.9)' : (isGood ? 'rgba(217, 119, 6, 0.9)' : 'rgba(15, 23, 42, 0.85)');
+          const border = isViral ? '#ef4444' : (isGood ? '#f59e0b' : 'rgba(255, 255, 255, 0.2)');
+          const textColor = (isViral || isGood) ? '#ffffff' : '#cbd5e1';
 
-        outlierChip.style.background = bg;
-        outlierChip.style.border = `1px solid ${border}`;
-        outlierChip.style.color = textColor;
-        outlierChip.textContent = `🔥 ${parser.formatOutlier(outlierVal)}`;
+          outlierChip.style.background = bg;
+          outlierChip.style.border = `1px solid ${border}`;
+          outlierChip.style.color = textColor;
+          outlierChip.textContent = `🔥 ${parser.formatOutlier(outlierVal)}`;
+        }
       }
     });
   }
