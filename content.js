@@ -171,6 +171,42 @@
       #find-trend-trigger-btn span:first-child {
         font-size: 15px !important;
       }
+      .ft-channel-badge {
+        position: absolute !important;
+        top: 8px !important;
+        left: 8px !important;
+        z-index: 30 !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 5px !important;
+        pointer-events: none !important;
+        font-family: Roboto, -apple-system, sans-serif !important;
+      }
+      .ft-badge-chip-vph {
+        height: 20px !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        padding: 0 6px !important;
+        border-radius: 4px !important;
+        font-size: 11px !important;
+        font-weight: 700 !important;
+        line-height: 1 !important;
+        background: rgba(0, 0, 0, 0.8) !important;
+        color: #60a5fa !important;
+        border: 1px solid rgba(96, 165, 250, 0.35) !important;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5) !important;
+      }
+      .ft-badge-chip-outlier {
+        height: 20px !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        padding: 0 6px !important;
+        border-radius: 4px !important;
+        font-size: 11px !important;
+        font-weight: 700 !important;
+        line-height: 1 !important;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5) !important;
+      }
     `;
     (document.head || document.documentElement).appendChild(style);
   }
@@ -230,6 +266,141 @@
   }
 
   /**
+   * Kiểm tra xem trang hiện tại có phải trang kênh YouTube không
+   */
+  function isChannelPage() {
+    const p = location.pathname;
+    return p.startsWith('/@') || p.startsWith('/channel/') || p.startsWith('/c/') || p.startsWith('/user/');
+  }
+
+  /**
+   * Tính trung vị của mảng số
+   */
+  function calculateMedian(arr) {
+    if (!arr || !arr.length) return 0;
+    const s = [...arr].sort((a, b) => a - b);
+    const mid = Math.floor(s.length / 2);
+    return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2);
+  }
+
+  /**
+   * Quét và gắn nhãn VPH + Outlier lên các thumbnail video trên trang kênh
+   */
+  function scanAndBadgeChannelVideos() {
+    ensureHeaderStyles();
+
+    if (!isChannelPage()) {
+      document.querySelectorAll('.ft-channel-badge').forEach(b => b.remove());
+      return;
+    }
+
+    const parser = window.FindTrendParser;
+    if (!parser) return;
+
+    const cards = document.querySelectorAll('yt-lockup-view-model, ytd-rich-item-renderer, ytd-grid-video-renderer');
+    const videoData = [];
+    const seenIds = new Set();
+
+    cards.forEach(card => {
+      const link = card.querySelector('a[href*="/watch?v="]');
+      const href = link?.getAttribute('href') || '';
+      const match = href.match(/[?&]v=([^&]+)/);
+      if (!match) return;
+      const videoId = match[1];
+      if (seenIds.has(videoId)) return;
+
+      let viewText = '', timeText = '';
+      card.querySelectorAll('span').forEach(span => {
+        if (span.closest('.ft-channel-badge')) return;
+        const t = span.textContent.replace(/\u00A0/g, ' ').trim();
+        if (!t) return;
+        if (!timeText && /(second|minute|hour|day|week|month|year|giây|phút|giờ|ngày|tuần|tháng|năm)\s*(ago|trước)/i.test(t)) {
+          timeText = t;
+        } else if (!viewText && /^[▷\s]*[\d.,]+\s*([kmbtrtriệuỷnghìn]*)$/i.test(t)) {
+          viewText = t.replace(/^[▷\s]+/, '');
+        }
+      });
+
+      const views = parser.parseViewCount(viewText);
+      const hours = parser.parsePublishedHours(timeText) || 24;
+      const vph = parser.calculateVPH(views, hours);
+
+      if (views > 0) {
+        seenIds.add(videoId);
+        videoData.push({ card, videoId, views, vph });
+      }
+    });
+
+    if (!videoData.length) return;
+    const medViews = calculateMedian(videoData.map(v => v.views)) || 1;
+
+    videoData.forEach(v => {
+      const outlierVal = v.views / medViews;
+      const thumbWrap = v.card.querySelector('yt-thumbnail-view-model, ytd-thumbnail, [class*="content-image"]') || 
+                        v.card.querySelector('a[href*="/watch?v="]') || 
+                        v.card;
+
+      if (!thumbWrap) return;
+      thumbWrap.style.position = 'relative';
+
+      let container = thumbWrap.querySelector('.ft-channel-badge');
+      if (!container) {
+        container = document.createElement('div');
+        container.className = 'ft-channel-badge';
+
+        const vphChip = document.createElement('span');
+        vphChip.className = 'ft-badge-chip-vph';
+
+        const outlierChip = document.createElement('span');
+        outlierChip.className = 'ft-badge-chip-outlier';
+
+        container.appendChild(vphChip);
+        container.appendChild(outlierChip);
+        thumbWrap.appendChild(container);
+      }
+
+      container.dataset.videoId = v.videoId;
+
+      const vphChip = container.querySelector('.ft-badge-chip-vph');
+      const outlierChip = container.querySelector('.ft-badge-chip-outlier');
+
+      if (vphChip) {
+        vphChip.textContent = `⚡ ${parser.formatVPH(v.vph)}`;
+      }
+
+      if (outlierChip) {
+        const isViral = outlierVal >= 3.0;
+        const isGood = outlierVal >= 1.5;
+        const bg = isViral ? 'rgba(220, 38, 38, 0.9)' : (isGood ? 'rgba(217, 119, 6, 0.9)' : 'rgba(15, 23, 42, 0.85)');
+        const border = isViral ? '#ef4444' : (isGood ? '#f59e0b' : 'rgba(255, 255, 255, 0.2)');
+        const textColor = (isViral || isGood) ? '#ffffff' : '#cbd5e1';
+
+        outlierChip.style.background = bg;
+        outlierChip.style.border = `1px solid ${border}`;
+        outlierChip.style.color = textColor;
+        outlierChip.textContent = `🔥 ${parser.formatOutlier(outlierVal)}`;
+      }
+    });
+  }
+
+  /**
+   * Giám sát thay đổi DOM trên trang kênh để gắn badge khi scroll/load thêm video
+   */
+  function observeChannelVideos() {
+    let timer = null;
+    const observer = new MutationObserver(() => {
+      if (!isChannelPage()) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(scanAndBadgeChannelVideos, 250);
+    });
+
+    const target = document.querySelector('ytd-app') || document.body;
+    if (target) {
+      observer.observe(target, { childList: true, subtree: true });
+    }
+  }
+
+  /**
    * Giám sát liên tục ytd-masthead để chống Polymer xóa nút khi re-render
    */
   function observeMasthead() {
@@ -263,9 +434,11 @@
         modalInstance.allVideos = [];
         modalInstance.close();
       }
+      document.querySelectorAll('.ft-channel-badge').forEach(b => b.remove());
       lastPageUrl = newUrl;
     }
     injectHeaderButton();
+    scanAndBadgeChannelVideos();
   }
 
   function setupNavigationObserver() {
@@ -282,6 +455,8 @@
     injectHeaderButton();
     observeMasthead();
     setupNavigationObserver();
+    observeChannelVideos();
+    scanAndBadgeChannelVideos();
 
     // Auto-open modal trên search page nếu được navigate từ modal search bar
     if (location.pathname === '/results' && sessionStorage.getItem('ft_auto_open')) {
@@ -299,6 +474,7 @@
     const bootInterval = setInterval(() => {
       retries++;
       injectHeaderButton();
+      scanAndBadgeChannelVideos();
       if (retries >= 10 && document.getElementById('find-trend-trigger-btn')) {
         clearInterval(bootInterval);
       }

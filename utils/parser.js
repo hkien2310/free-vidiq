@@ -8,7 +8,7 @@
  */
 function parseViewCount(viewStr) {
   if (!viewStr || typeof viewStr !== 'string') return 0;
-  const clean = viewStr.replace(/\u00A0/g, ' ').trim().toLowerCase();
+  const clean = viewStr.replace(/\u00A0/g, ' ').replace(/^[▷\s]+/, '').trim().toLowerCase();
   if (clean.includes('no views') || clean.includes('chưa có lượt xem')) return 0;
 
   const match = clean.match(/([\d\.,]+)\s*([a-zà-ỹ]*)/i);
@@ -159,13 +159,26 @@ function calculateVPH(views, hours) {
  * Định dạng hiển thị VPH (ví dụ: 129.6 VPH hoặc 1.2K VPH)
  */
 function formatVPH(vph) {
+  if (!vph || vph <= 0) return '-- VPH';
+  if (vph < 1) return '< 1 VPH';
   if (vph >= 1_000_000) {
     return (vph / 1_000_000).toFixed(1) + 'M VPH';
   }
   if (vph >= 1_000) {
     return (vph / 1_000).toFixed(1) + 'K VPH';
   }
-  return vph.toFixed(1) + ' VPH';
+  return Math.round(vph) + ' VPH';
+}
+
+/**
+ * Định dạng hiển thị Outlier Score (ví dụ: < 0.1x, 0.8x, 5.8x, 48x, > 50x)
+ */
+function formatOutlier(outlier) {
+  if (!outlier || outlier <= 0) return '1.0x';
+  if (outlier < 0.1) return '< 0.1x';
+  if (outlier >= 50) return '> 50x';
+  if (outlier >= 10) return Math.round(outlier) + 'x';
+  return outlier.toFixed(1) + 'x';
 }
 
 /**
@@ -235,6 +248,7 @@ if (typeof window !== 'undefined') {
     parsePublishedHours,
     calculateVPH,
     formatVPH,
+    formatOutlier,
     formatCompactNumber,
     formatNumber: formatCompactNumber,
     calculateOutlierScore,
